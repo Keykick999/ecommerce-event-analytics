@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ears-config
+data:
+  DB_HOST: "ears-db-service"
+  DB_PORT: "5432"

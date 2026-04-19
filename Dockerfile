@@ -2,18 +2,14 @@ FROM python:3.10-slim
 
 WORKDIR /app
 
-# Install system dependencies for psycopg2
 RUN apt-get update && apt-get install -y \
+    build-essential \
     libpq-dev \
-    gcc \
     && rm -rf /var/lib/apt/lists/*
 
-# Install python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy source code
-COPY generator.py .
+COPY . .
 
-# Run the generator
-CMD ["python", "generator.py"]
+CMD ["python"]

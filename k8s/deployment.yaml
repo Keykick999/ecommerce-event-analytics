@@ -1,0 +1,20 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ears-generator
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: ears-generator
+  template:
+    metadata:
+      labels:
+        app: ears-generator
+    spec:
+      containers:
+      - name: generator
+        image: ears-generator:latest
+        envFrom:
+        - configMapRef:
+            name: ears-config

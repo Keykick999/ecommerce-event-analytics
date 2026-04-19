@@ -1,9 +1,10 @@
 version: '3.8'
 
 services:
+  # 1. 고가용성 데이터 저장 레이어 (PostgreSQL)
   db:
     image: postgres:15
-    container_name: ecommerce_db
+    container_name: ears_v4_db
     environment:
       POSTGRES_USER: user
       POSTGRES_PASSWORD: password
@@ -13,16 +14,53 @@ services:
     volumes:
       - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d analytics_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
     restart: always
 
+  # 2. 트래픽 & 에러 시뮬레이션 레이어
   generator:
     build: .
-    container_name: ecommerce_generator
+    container_name: ears_v4_generator
+    command: python generator.py
     depends_on:
-      - db
+      db:
+        condition: service_healthy
     environment:
       DB_HOST: db
-    restart: "no" # Runs once to generate seed data or set to 'always' for continuous flow
+      DB_PORT: 5432
+    restart: on-failure
+
+  # 3. 실시간 장애 탐지 & 서킷 브레이킹 워커
+  detector:
+    build: .
+    container_name: ears_v4_detector
+    command: python detector.py
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+    restart: always
+
+  # 4. 통합 관제 대시보드 (Streamlit)
+  dashboard:
+    build: .
+    container_name: ears_v4_dashboard
+    command: python -m streamlit run dashboard.py --server.port 8501 --server.address 0.0.0.0
+    ports:
+      - "8501:8501"
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+    restart: always
 
 volumes:
   postgres_data:

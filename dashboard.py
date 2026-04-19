@@ -1,189 +1,111 @@
 import streamlit as st
 import pandas as pd
-import psycopg2
 import plotly.express as px
+from data_service import DataService
 
-# DB Connection
+# Initialize DataService
+data_service = DataService()
 
-def get_connection():
-    try:
-        return psycopg2.connect(
-            host="localhost",
-            database="analytics_db",
-            user="user",
-            password="password",
-            port=5433
-        )
-    except Exception as e:
-        st.error(f"데이터베이스 연결에 실패했습니다. Docker가 실행 중인지 확인해 주세요. ({e})")
-        st.stop()
+# --- Page Config ---
+st.set_page_config(page_title="이커머스 통합 관제 시스템", layout="wide", page_icon="🛡️")
 
-st.set_page_config(page_title="E-commerce Analytics Dashboard", layout="wide")
+# --- Header ---
+st.title("🛡️ 통합 시스템 관제 및 비즈니스 분석")
+st.markdown("실시간 고가용성 이커머스 이벤트 로그 파이프라인 및 이상 탐지 시스템")
 
-st.title("📊 E-commerce Discovery vs. Purchase Analytics")
-st.markdown("이 대시보드는 상품에 대한 관심(조회)과 결과(결제)의 차이를 분석하여 비즈니스 인사이트를 제공합니다.")
+# --- Sidebar ---
+st.sidebar.header("🕹️ 컨트롤 센터")
+categories_df = pd.read_sql("SELECT DISTINCT category FROM products", data_service.get_connection())
+selected_cat = st.sidebar.selectbox("카테고리 필터", ["All"] + list(categories_df['category']))
 
-# Sidebar Filters
-st.sidebar.header("Filters")
-conn = get_connection()
-categories_df = pd.read_sql("SELECT DISTINCT category FROM products", conn)
-selected_category = st.sidebar.selectbox("Select Category", ["All"] + list(categories_df['category']))
+# --- Tabs ---
+tab_health, tab_biz, tab_log = st.tabs(["🚦 시스템 상태 (Health)", "📊 비즈니스 데이터 분석", "📜 엔드-투-엔드 로그"])
 
-# Main Metrics
-st.subheader(f"Current Performance: {selected_category}")
+# [Tab 1] 시스템 상태 영역 (EARS core)
+with tab_health:
+    st.header("실시간 인프라 건강도")
+    
+    # 1. KPI Metrics
+    health_metrics = data_service.get_system_health_metrics()
+    col1, col2, col3 = st.columns(3)
+    col1.metric("최근 1시간 에러 발생 (건)", int(health_metrics['total_errors']), delta=-2 if health_metrics['total_errors'] > 0 else 0)
+    col2.metric("고유 에러 타입", int(health_metrics['unique_error_types']))
+    col3.metric("Critical 발생", int(health_metrics['critical_errors']), delta_color="inverse")
 
-category_filter = "" if selected_category == "All" else f"AND p.category = '{selected_category}'"
+    st.divider()
 
-# Query for Metrics
-metrics_query = f"""
-    SELECT 
-        COUNT(*) FILTER (WHERE event_type = 'page_view') as total_views,
-        COUNT(*) FILTER (WHERE event_type = 'purchase') as total_purchases,
-        COUNT(DISTINCT user_id) as unique_users
-    FROM events e
-    JOIN products p ON e.product_id = p.product_id
-    WHERE 1=1 {category_filter}
-"""
-metrics_df = pd.read_sql(metrics_query, conn)
+    # 2. Charts
+    col_h1, col_h2 = st.columns([1, 2])
+    with col_h1:
+        st.write("### 🚨 에러 코드별 분포")
+        err_dist = data_service.get_error_distribution_by_code()
+        if not err_dist.empty:
+            fig_err = px.pie(err_dist, values='count', names='error_code', hole=0.4, 
+                             color_discrete_sequence=px.colors.sequential.Reds_r)
+            st.plotly_chart(fig_err, use_container_width=True)
+            
+    with col_h2:
+        st.write("### 📉 상세 에러 패턴 분석 (Summary)")
+        # 요약 테이블을 활용한 시계열 분석 등 추가 가능
+        st.dataframe(err_dist, use_container_width=True)
 
-col1, col2, col3, col4 = st.columns(4)
-col1.metric("Total Views", metrics_df['total_views'][0])
-col2.metric("Total Purchases", metrics_df['total_purchases'][0])
-col3.metric("Unique Users", metrics_df['unique_users'][0])
+# [Tab 2] 비즈니스 데이터 분석 영역 (KPI)
+with tab_biz:
+    st.header(f"비즈니스 인사이트 ({selected_cat})")
+    
+    # 1. Business Metrics
+    biz_metrics = data_service.get_kpi_metrics(selected_cat)
+    b_col1, b_col2, b_col3, b_col4 = st.columns(4)
+    b_col1.metric("총 조회수", f"{int(biz_metrics['views']):,}")
+    b_col2.metric("총 구매수", f"{int(biz_metrics['purchases']):,}")
+    b_col3.metric("유니크 방문자", f"{int(biz_metrics['users']):,}")
+    
+    cvr = (biz_metrics['purchases'] / biz_metrics['views'] * 100) if biz_metrics['views'] > 0 else 0
+    b_col4.metric("구매 전환율 (CVR)", f"{cvr:.2f}%")
 
-cvr = (metrics_df['total_purchases'][0] / metrics_df['total_views'][0] * 100) if metrics_df['total_views'][0] > 0 else 0
-col4.metric("Conversion Rate (CVR)", f"{cvr:.2f}%")
+    st.divider()
+    
+    col_b1, col_b2 = st.columns(2)
+    with col_b1:
+        st.write("### 🏆 인기 상품 TOP 10")
+        popular_df = data_service.get_popular_products(selected_cat)
+        if not popular_df.empty:
+            fig_pop = px.bar(popular_df, x='count', y='name', orientation='h',
+                             labels={'count': '구매 횟수', 'name': '상품명'},
+                             color='count', color_continuous_scale='Viridis')
+            st.plotly_chart(fig_pop, use_container_width=True)
+            
+    with col_b2:
+        st.write("### 🔍 인기 검색 키워드 TOP 10")
+        keywords_df = data_service.get_popular_search_keywords(selected_cat)
+        if not keywords_df.empty:
+            st.table(keywords_df)
 
-# Analysis Charts
-col_left, col_right = st.columns(2)
+    st.divider()
 
-with col_left:
-    st.write("### 🔥 Top 10 Most Viewed Products")
-    view_query = f"""
-        SELECT p.name, COUNT(*) as views
-        FROM events e
-        JOIN products p ON e.product_id = p.product_id
-        WHERE e.event_type = 'page_view' {category_filter}
-        GROUP BY p.name
-        ORDER BY views DESC
-        LIMIT 10
-    """
-    view_df = pd.read_sql(view_query, conn)
-    if not view_df.empty:
-        fig_view = px.bar(view_df, x='views', y='name', orientation='h', color='views', color_continuous_scale='Blues')
-        st.plotly_chart(fig_view, use_container_width=True)
-    else:
-        st.info("No view data available.")
+    col_c1, col_c2 = st.columns(2)
+    with col_c1:
+        st.write("### 🥧 카테고리별 성과 비교 (전체)")
+        cat_perf_df = data_service.get_category_performance()
+        if not cat_perf_df.empty:
+            fig_cat = px.bar(cat_perf_df, x='category', y=['views', 'purchases'], 
+                             barmode='group', title="카테고리별 조회 vs 구매")
+            st.plotly_chart(fig_cat, use_container_width=True)
+            
+    with col_c2:
+        st.write("### 📈 시간대별 사용자 활동량 (24시간)")
+        hourly_df = data_service.get_hourly_activity()
+        if not hourly_df.empty:
+            fig_hour = px.line(hourly_df, x='hour', y='count', 
+                               labels={'count': '활동량', 'hour': '시간'})
+            st.plotly_chart(fig_hour, use_container_width=True)
 
-with col_right:
-    st.write("### 💰 Top 10 Most Sold Products")
-    sold_query = f"""
-        SELECT p.name, COUNT(*) as sales
-        FROM events e
-        JOIN products p ON e.product_id = p.product_id
-        WHERE e.event_type = 'purchase' {category_filter}
-        GROUP BY p.name
-        ORDER BY sales DESC
-        LIMIT 10
-    """
-    sold_df = pd.read_sql(sold_query, conn)
-    if not sold_df.empty:
-        fig_sold = px.bar(sold_df, x='sales', y='name', orientation='h', color='sales', color_continuous_scale='Reds')
-        st.plotly_chart(fig_sold, use_container_width=True)
-    else:
-        st.info("No purchase data available.")
+# [Tab 3] 상세 로그 조회 영역 (Trace ID 포함)
+with tab_log:
+    st.header("📜 엔드-투-엔드 이벤트 로그")
+    if st.checkbox("최근 50개 로그 보기"):
+        logs = data_service.get_recent_event_logs(50)
+        st.dataframe(logs, use_container_width=True)
 
-st.divider()
-
-# New Search Insights Section
-st.subheader("🔍 Search & Intent Analysis")
-col_s1, col_s2 = st.columns(2)
-
-with col_s1:
-    st.write("### 🔝 Top Search Keywords")
-    search_query = f"""
-        SELECT metadata->>'query_string' as keyword, COUNT(*) as count
-        FROM events e
-        WHERE event_type = 'search' 
-        {"" if selected_category == "All" else f"AND metadata->>'selected_type' = '{selected_category}'"}
-        GROUP BY keyword
-        ORDER BY count DESC
-        LIMIT 10
-    """
-    search_df = pd.read_sql(search_query, conn)
-    if not search_df.empty:
-        fig_search = px.pie(search_df, values='count', names='keyword', hole=.3, color_discrete_sequence=px.colors.sequential.RdBu)
-        st.plotly_chart(fig_search, use_container_width=True)
-    else:
-        st.info("No search data available.")
-
-with col_s2:
-    st.write("### ⚠️ Zero-Result Searches (Bottlenecks)")
-    zero_query = f"""
-        SELECT metadata->>'query_string' as keyword, metadata->>'selected_type' as category, COUNT(*) as count
-        FROM events e
-        WHERE event_type = 'search' AND (metadata->>'result_count')::int = 0
-        GROUP BY keyword, category
-        ORDER BY count DESC
-        LIMIT 5
-    """
-    zero_df = pd.read_sql(zero_query, conn)
-    if not zero_df.empty:
-        st.warning("사용자가 검색했지만 결과를 찾지 못한 키워드들입니다.")
-        st.table(zero_df)
-    else:
-        st.success("모든 검색어가 하나 이상의 결과를 찾았습니다! (데이터가 더 쌓이면 나타납니다)")
-
-st.divider()
-
-# Error Log & System Health Section
-st.subheader("🚨 System Health & Error Monitoring")
-col_e1, col_e2 = st.columns([1, 2])
-
-with col_e1:
-    st.write("### Error Distribution")
-    error_query = """
-        SELECT metadata->>'error_code' as code, COUNT(*) as count
-        FROM events WHERE event_type = 'error'
-        GROUP BY code
-    """
-    error_dist_df = pd.read_sql(error_query, conn)
-    if not error_dist_df.empty:
-        fig_err = px.bar(error_dist_df, x='code', y='count', color='code', color_discrete_sequence=['#FF4B4B', '#FF9F9F'])
-        st.plotly_chart(fig_err, use_container_width=True)
-    else:
-        st.info("No system errors detected yet.")
-
-with col_e2:
-    st.write("### Recent System Error Logs")
-    detailed_error_query = """
-        SELECT timestamp, metadata->>'error_code' as code, metadata->>'message' as message, metadata->>'page' as page
-        FROM events WHERE event_type = 'error'
-        ORDER BY timestamp DESC LIMIT 5
-    """
-    det_error_df = pd.read_sql(detailed_error_query, conn)
-    if not det_error_df.empty:
-        st.dataframe(det_error_df, use_container_width=True)
-    else:
-        st.success("System is running healthy.")
-
-# Data Table
-st.divider()
-if st.checkbox("Show Raw Event Log (Last 50 Insights)"):
-    log_query = """
-        SELECT timestamp, event_type, user_id, 
-               CASE 
-                 WHEN product_id IS NOT NULL THEN (SELECT name FROM products WHERE product_id = events.product_id)
-                 ELSE 'N/A'
-               END as product_name,
-               metadata 
-        FROM events 
-        ORDER BY timestamp DESC 
-        LIMIT 50
-    """
-    st.dataframe(pd.read_sql(log_query, conn), use_container_width=True)
-
-conn.close()
-
-if st.button("Refresh Data"):
+if st.button("데이터 강제 새로고침"):
     st.rerun()
